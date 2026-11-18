@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_USER: ops
+          POSTGRES_PASSWORD: ops
+          POSTGRES_DB: ops
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ops" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r ops-tools/requirements.lock pytest
+      - name: Workflows are generated from code
+        run: python n8n/build_workflows.py --check
+      - name: Vendored analyzer matches spark-optimizer-skill
+        run: ./scripts/sync_analyzer.sh --check
+      - name: Unit and database tests
+        working-directory: ops-tools
+        env:
+          TEST_DATABASE_URL: postgresql://ops:ops@localhost:5432/ops
+        run: python -m pytest -v
+
+  e2e:
+    needs: unit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test environment (scripted model, random secrets)
+        run: ./scripts/init_env.sh tests/e2e/.env.test
+      - name: Start the stack (n8n queue mode, workers, Redis, Postgres, ops-tools, stub model)
+        run: docker compose --env-file tests/e2e/.env.test --profile test up -d --build
+      - name: Run every workflow end to end
+        run: python3 tests/e2e/run_e2e.py tests/e2e/.env.test
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --env-file tests/e2e/.env.test --profile test logs --no-color | tail -400

@@ -1,0 +1,8 @@
+.git
+.venv
+**/__pycache__
+outbox
+demo
+tests
+.env
+*.md

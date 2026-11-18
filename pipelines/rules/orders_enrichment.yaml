@@ -1,0 +1,13 @@
+# Row-level quality rules for orders_enrichment (same format as the spark-streaming-pipeline quality step).
+pipeline: orders_enrichment
+on_failure: quarantine
+rules:
+  - name: order_id_present
+    expression: order_id IS NOT NULL
+    max_failed_pct: 0.5
+  - name: amount_positive
+    expression: amount > 0
+  - name: currency_known
+    expression: currency IN ('USD', 'EUR', 'GBP', 'INR')
+  - name: amount_within_limit
+    expression: amount <= 50000

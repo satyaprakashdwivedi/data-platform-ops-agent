@@ -1,0 +1,858 @@
+{
+  "id": "opsDqIncident001",
+  "name": "Data quality incident",
+  "active": true,
+  "nodes": [
+    {
+      "id": "cfed5519-ef55-55f4-9e13-39c8ac5d9477",
+      "name": "Quality incident",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "dq-incident",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "webhookId": "1a635e5b-095a-545e-b449-cc6fdd50f1f1",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsWebhookToken1",
+          "name": "Webhook token"
+        }
+      }
+    },
+    {
+      "id": "bf7f72e9-e34d-538a-8b81-39cc29181d38",
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"workflow\": \"dq-incident\", \"subject\": {{ JSON.stringify($json.body.pipeline + \"/\" + $json.body.rule) }}, \"trigger\": {{ JSON.stringify($json.body) }}, \"n8n_execution_id\": {{ JSON.stringify($execution.id) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "177ca1f4-9a1f-5381-bd30-2180c9775d04",
+      "name": "Investigate and classify (agent)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Task: dq_incident\nPipeline: {{ $('Quality incident').item.json.body.pipeline }}\nRule: {{ $('Quality incident').item.json.body.rule }}\nRun id (pass it to every tool call): {{ $('Start run').item.json.run_id }}\n\n<incident>\n{{ JSON.stringify({ ...$('Quality incident').item.json.body, run_id: $('Start run').item.json.run_id }) }}\n</incident>",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are the data platform on-call assistant for data quality. A quality rule on a streaming pipeline is\nfailing far more rows than its threshold. Decide what kind of problem it is and the safest action.\nA human approves every action.\n\nClassify the incident as one of:\n- upstream_schema_change: the producer changed field names, types or formats (new or missing fields)\n- data_defect: the schema is the same but values are wrong (bad amounts, impossible dates, duplicates)\n- rule_too_strict: the rule rejects valid data that the business now accepts\n- transient: a short spike that is already recovering\n\nThen choose one action:\n- monitor: nothing to do yet\n- open_incident: tell the owning team, keep the pipeline running\n- pause_downstream: stop downstream consumers reading bad data until the cause is fixed\n- adjust_rule: change the rule's max_failed_pct (never its SQL); only for rule_too_strict\n\nHow to work:\n1. Call sample_failed_rows for the rule. Compare the failing rows' fields with fields_seen_in_other_rules:\n   a field that only appears in the failing rows points to a schema change.\n2. Call get_failure_history to see whether it is a step change or a slow drift.\n3. Call check_proposal with kind \"dq_action\" before answering, and fix anything it rejects.\n4. Explain your evidence in the rationale: which fields, what values, since when, and who is affected downstream.",
+          "maxIterations": 10
+        }
+      }
+    },
+    {
+      "id": "39ffd0c7-9ac8-57af-8136-41ed760e3092",
+      "name": "Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        360,
+        220
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.ANTHROPIC_MODEL || 'claude-sonnet-5-5' }}"
+        },
+        "options": {
+          "maxTokensToSample": 4096,
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "anthropicApi": {
+          "id": "opsAnthropic0001",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "id": "da48fa98-00d9-54d5-8709-b54b2c00b349",
+      "name": "Ops tools",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        520,
+        220
+      ],
+      "parameters": {
+        "endpointUrl": "={{ $env.OPS_TOOLS_URL }}/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "selected",
+        "includeTools": [
+          "sample_failed_rows",
+          "get_failure_history",
+          "get_pipeline_config",
+          "check_proposal"
+        ],
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "859c8747-836b-5af4-a784-dafed5c56020",
+      "name": "Output schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        680,
+        220
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"classification\",\n    \"action\",\n    \"summary\",\n    \"rationale\",\n    \"confidence\"\n  ],\n  \"properties\": {\n    \"classification\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"upstream_schema_change\",\n        \"data_defect\",\n        \"rule_too_strict\",\n        \"transient\"\n      ]\n    },\n    \"action\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"monitor\",\n        \"open_incident\",\n        \"pause_downstream\",\n        \"adjust_rule\"\n      ]\n    },\n    \"rule_change\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"max_failed_pct\": {\n          \"type\": \"number\"\n        }\n      },\n      \"description\": \"only for adjust_rule\"\n    },\n    \"summary\": {\n      \"type\": \"string\"\n    },\n    \"rationale\": {\n      \"type\": \"string\"\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    }\n  }\n}"
+      }
+    },
+    {
+      "id": "7bf4ed76-f097-5e59-951f-23c3a82995e6",
+      "name": "Store proposal (guardrails)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        800,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/proposals",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"kind\": \"dq_action\", \"pipeline\": {{ JSON.stringify($('Quality incident').item.json.body.pipeline) }}, \"changes\": { \"action\": {{ JSON.stringify($json.output.action) }}, \"rule\": {{ JSON.stringify($('Quality incident').item.json.body.rule) }}{{ $json.output.action === \"adjust_rule\" ? \", \\\"rule_change\\\": \" + JSON.stringify($json.output.rule_change) : \"\" }} }, \"diagnosis\": {{ JSON.stringify($json.output.classification + \": \" + $json.output.summary) }}, \"rationale\": {{ JSON.stringify($json.output.rationale) }}, \"confidence\": {{ $json.output.confidence }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "eb4fbd8b-9c7a-5170-998e-bb33d22e971e",
+      "name": "Passed guardrails?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a5b3d606-879b-5eac-b5d6-f613a9bd9880",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "pending_approval",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "d920a67b-3af1-540b-9da0-6e68d4523108",
+      "name": "Action needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        -100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e2e15b8e-4f22-5282-98e9-9b0ad75f669f",
+              "leftValue": "={{ $json.changes.action }}",
+              "rightValue": "monitor",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "97b162c9-f99b-5278-b2e4-7be63ad0a950",
+      "name": "Ask for approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1520,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Data quality incident on \" + $json.pipeline + \": approve action?\") }}, \"body\": {{ JSON.stringify(\"*\" + $json.diagnosis + \"*\\nProposed action: `\" + $json.changes.action + \"`\\n\\n\" + $json.rationale + \"\\nConfidence \" + $json.confidence + \". Proposal #\" + $json.proposal_id) }}, \"links\": { \"Approve\": {{ JSON.stringify($execution.resumeUrl + ($execution.resumeUrl.includes('?') ? '&' : '?') + 'decision=approve') }}, \"Decline\": {{ JSON.stringify($execution.resumeUrl + ($execution.resumeUrl.includes('?') ? '&' : '?') + 'decision=decline') }} } }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "1ffab2c0-3742-567a-a385-55a26b2f9974",
+      "name": "Wait for approval (24h)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        -100
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "GET",
+        "incomingAuthentication": "basicAuth",
+        "responseMode": "onReceived",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 24,
+        "resumeUnit": "hours",
+        "options": {
+          "responseData": "Thanks, your decision was recorded."
+        }
+      },
+      "webhookId": "cfafdc92-9915-53aa-ab55-40128ee3f981",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "opsApprovers0001",
+          "name": "Approvers"
+        }
+      }
+    },
+    {
+      "id": "a1b5033b-f089-5fb5-b33c-f830de2da5b5",
+      "name": "Record decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2000,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/proposals/{{ $('Store proposal (guardrails)').item.json.proposal_id }}/decision",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"decision\": {{ JSON.stringify($json.query?.decision ?? \"expire\") }}, \"decided_by\": {{ JSON.stringify($json.query?.by ?? \"approver\") }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "2f718f5f-b220-52e9-80be-474b89f08c13",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2240,
+        -100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f4a7e74e-cb60-5b43-9f12-396a03497419",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "a800830b-34da-562f-9b68-b0c7eea1ecd3",
+      "name": "Finish run (monitoring)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1520,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=monitoring",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "e8a03032-e35a-515c-a6ac-aeb73a749c9e",
+      "name": "Carry out action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2480,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/proposals/{{ $('Store proposal (guardrails)').item.json.proposal_id }}/apply",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "3475c788-aca0-5188-b826-11653f8d6be8",
+      "name": "Tell the team",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2720,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Quality action done on \" + $json.pipeline) }}, \"body\": {{ JSON.stringify(\"Approved by \" + $json.decided_by + \": \" + $json.applied_ref) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "2c544d97-1747-5031-80ce-b25854ed89f6",
+      "name": "Finish run (applied)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2960,
+        -220
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=applied",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "e964c302-6580-5536-8d5f-14baf6af1d2d",
+      "name": "Finish run (not approved)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2480,
+        20
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=not_approved",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "725fb3a9-017b-5c76-8b46-6a9dece9c843",
+      "name": "Report guardrail rejection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1280,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Agent action blocked by guardrails: \" + $json.pipeline) }}, \"body\": {{ JSON.stringify($json.guardrail_report.violations.join(\"\\n\")) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "ae47ea58-8072-514d-80f1-9e0c135c9cc7",
+      "name": "Finish run (blocked)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1520,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=blocked_by_guardrails",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Investigate and classify (agent)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ops tools": {
+      "ai_tool": [
+        [
+          {
+            "node": "Investigate and classify (agent)",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Investigate and classify (agent)",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality incident": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Investigate and classify (agent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Investigate and classify (agent)": {
+      "main": [
+        [
+          {
+            "node": "Store proposal (guardrails)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store proposal (guardrails)": {
+      "main": [
+        [
+          {
+            "node": "Passed guardrails?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Passed guardrails?": {
+      "main": [
+        [
+          {
+            "node": "Action needed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report guardrail rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for approval": {
+      "main": [
+        [
+          {
+            "node": "Wait for approval (24h)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for approval (24h)": {
+      "main": [
+        [
+          {
+            "node": "Record decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record decision": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Action needed?": {
+      "main": [
+        [
+          {
+            "node": "Ask for approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finish run (monitoring)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Carry out action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finish run (not approved)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carry out action": {
+      "main": [
+        [
+          {
+            "node": "Tell the team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tell the team": {
+      "main": [
+        [
+          {
+            "node": "Finish run (applied)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report guardrail rejection": {
+      "main": [
+        [
+          {
+            "node": "Finish run (blocked)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "opsErrorHandler1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "description": "One failing quality rule: the agent inspects quarantined rows and history, classifies the incident and proposes an action; a human approves before anything changes."
+  },
+  "tags": []
+}

@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+outbox/*
+!outbox/.gitkeep
+.pytest_cache/
+tests/e2e/.env.test

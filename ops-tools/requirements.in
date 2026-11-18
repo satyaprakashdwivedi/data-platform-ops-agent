@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+psycopg[binary,pool]
+pyyaml
+mcp>=2.3,<3
+httpx

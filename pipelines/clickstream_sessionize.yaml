@@ -1,0 +1,10 @@
+pipeline: clickstream_sessionize
+owner: data-platform
+schedule: "0 * * * *"
+entrypoint: jobs/clickstream_sessionize.py
+spark_conf:
+  spark.executor.memory: 16g
+  spark.executor.cores: "4"
+  spark.executor.instances: "40"
+  spark.sql.shuffle.partitions: "400"
+  spark.sql.adaptive.enabled: "true"

@@ -1,0 +1,828 @@
+{
+  "id": "opsSparkTriage01",
+  "name": "Spark failure triage",
+  "active": true,
+  "nodes": [
+    {
+      "id": "cdefd4dd-b1c7-5123-8883-812fc4a26c60",
+      "name": "Spark job failed",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "spark-job-failed",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "webhookId": "1a7b1934-8fec-5321-816d-fffcafdce6df",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsWebhookToken1",
+          "name": "Webhook token"
+        }
+      }
+    },
+    {
+      "id": "a4ab08f6-31bf-5dc1-bbe3-e07187aa00fe",
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"workflow\": \"spark-failure-triage\", \"subject\": {{ JSON.stringify($json.body.app_id) }}, \"trigger\": {{ JSON.stringify($json.body) }}, \"n8n_execution_id\": {{ JSON.stringify($execution.id) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "19b7cad8-c2cb-56a0-b0f0-5a4431c6b465",
+      "name": "Analyse logs (deterministic)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/spark/analyze",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"app_id\": {{ JSON.stringify($(\"Spark job failed\").item.json.body.app_id) }}, \"pipeline\": {{ JSON.stringify($(\"Spark job failed\").item.json.body.pipeline ?? null) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "256c742c-1b4b-59e5-91f2-eedda6c51525",
+      "name": "Diagnose and propose (agent)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Task: spark_triage\nPipeline: {{ $json.pipeline }}\nApplication: {{ $json.app_id }}\nRun id (pass it to every tool call): {{ $('Start run').item.json.run_id }}\n\n<analysis>\n{{ JSON.stringify({ ...$json, run_id: $('Start run').item.json.run_id }) }}\n</analysis>",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are the data platform on-call assistant. A Spark job just failed or ran badly, and you propose the\nsmallest Spark configuration change that fixes the root cause. A human approves every change.\n\nHow to work:\n1. The deterministic analyzer has already run; its output is in <analysis>. Treat its numbers as facts.\n   Do not compute memory sizes or partition counts yourself.\n2. Pick only keys and values from the analyzer's `recommended` list, using the exact values it gives.\n   Choose the minimal subset that addresses the primary `diagnosis` (usually 1-4 keys, never more than 6).\n   A heap OOM is fixed with heap or partitions; a container kill is fixed with memoryOverhead, not heap.\n3. You may call get_pipeline_config to see the pipeline's checked-in config and owners.\n4. Before answering, call check_proposal with kind \"spark_conf\". If it reports violations, drop or fix\n   those keys and check again. Never return a proposal that failed the check.\n5. If no config change would help (for example the job is healthy or the fix is in the code),\n   return an empty spark_conf and say what a person should look at instead.\n6. Write the rationale for the engineer who approves it: cite the evidence (stage, metric, log line).",
+          "maxIterations": 10
+        }
+      }
+    },
+    {
+      "id": "e80c322a-d1ce-5e99-ab45-594254ad5895",
+      "name": "Claude",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        600,
+        220
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.ANTHROPIC_MODEL || 'claude-sonnet-5-5' }}"
+        },
+        "options": {
+          "maxTokensToSample": 4096,
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "anthropicApi": {
+          "id": "opsAnthropic0001",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "id": "89ab29b4-8a5d-5589-9c5d-e2f082403f59",
+      "name": "Ops tools",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        760,
+        220
+      ],
+      "parameters": {
+        "endpointUrl": "={{ $env.OPS_TOOLS_URL }}/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "selected",
+        "includeTools": [
+          "analyze_spark_job",
+          "get_pipeline_config",
+          "check_proposal"
+        ],
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "3a26fa23-2b20-5443-9ef0-68d996f5cfaa",
+      "name": "Output schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        920,
+        220
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"diagnosis\",\n    \"root_cause\",\n    \"spark_conf\",\n    \"rationale\",\n    \"confidence\"\n  ],\n  \"properties\": {\n    \"diagnosis\": {\n      \"type\": \"string\",\n      \"description\": \"one sentence for the approver\"\n    },\n    \"root_cause\": {\n      \"type\": \"string\"\n    },\n    \"spark_conf\": {\n      \"type\": \"object\",\n      \"additionalProperties\": {\n        \"type\": \"string\"\n      },\n      \"description\": \"keys and exact values from the analyzer's recommendations\"\n    },\n    \"rationale\": {\n      \"type\": \"string\",\n      \"description\": \"evidence: stage, metric or log line\"\n    },\n    \"risks\": {\n      \"type\": \"string\"\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    }\n  }\n}"
+      }
+    },
+    {
+      "id": "3582ce4a-b265-5a8c-9565-9c8bc221f145",
+      "name": "Store proposal (guardrails)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1040,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/proposals",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"kind\": \"spark_conf\", \"pipeline\": {{ JSON.stringify($(\"Analyse logs (deterministic)\").item.json.pipeline) }}, \"changes\": { \"spark_conf\": {{ JSON.stringify($json.output.spark_conf) }} }, \"diagnosis\": {{ JSON.stringify($json.output.diagnosis) }}, \"rationale\": {{ JSON.stringify($json.output.rationale + ($json.output.risks ? \"\\nRisks: \" + $json.output.risks : \"\")) }}, \"confidence\": {{ $json.output.confidence }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "23c01438-dcb3-564a-b370-2d7ab2c02e79",
+      "name": "Passed guardrails?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "88881bf1-78c3-5192-8743-f7e77b963a2f",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "pending_approval",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "c6bf6408-bdb3-5d45-a159-3632b9b9ce2b",
+      "name": "Ask for approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1520,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Spark fix for \" + $json.pipeline + \": approve?\") }}, \"body\": {{ JSON.stringify(\"*\" + $json.diagnosis + \"*\\n\" + Object.entries($json.changes.spark_conf).map(([k, v]) => \"\u2022 `\" + k + \" = \" + v + \"`\").join(\"\\n\") + \"\\n\\n\" + $json.rationale + \"\\nGuardrails passed. Confidence \" + $json.confidence + \". Proposal #\" + $json.proposal_id) }}, \"links\": { \"Approve\": {{ JSON.stringify($execution.resumeUrl + ($execution.resumeUrl.includes('?') ? '&' : '?') + 'decision=approve') }}, \"Decline\": {{ JSON.stringify($execution.resumeUrl + ($execution.resumeUrl.includes('?') ? '&' : '?') + 'decision=decline') }} } }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "c70f4b2f-d7f3-5eae-8354-8e2858dc4a39",
+      "name": "Wait for approval (24h)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "GET",
+        "incomingAuthentication": "basicAuth",
+        "responseMode": "onReceived",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 24,
+        "resumeUnit": "hours",
+        "options": {
+          "responseData": "Thanks, your decision was recorded."
+        }
+      },
+      "webhookId": "b3523efb-8c52-55a7-a91f-d1e7934cb344",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "opsApprovers0001",
+          "name": "Approvers"
+        }
+      }
+    },
+    {
+      "id": "24eebc6a-9608-5336-a2f1-9300a32c5856",
+      "name": "Record decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2000,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/proposals/{{ $('Store proposal (guardrails)').item.json.proposal_id }}/decision",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"decision\": {{ JSON.stringify($json.query?.decision ?? \"expire\") }}, \"decided_by\": {{ JSON.stringify($json.query?.by ?? \"approver\") }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "2b6f9f02-e701-5616-b679-806738f36996",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2240,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8c962d43-cc4c-524b-9fd1-7c7b7db39b1d",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "2ddc77d0-8cea-592c-8c54-e6fe70936a2a",
+      "name": "Open pull request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2480,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/proposals/{{ $('Store proposal (guardrails)').item.json.proposal_id }}/apply",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "f73dbba9-4b5b-5b92-98bd-21d36bf71e1d",
+      "name": "Tell the team",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2720,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Spark fix approved for \" + $json.pipeline) }}, \"body\": {{ JSON.stringify(\"Approved by \" + $json.decided_by + \". Change: \" + $json.applied_ref) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "54bab926-f231-55c0-84cb-a082b884038f",
+      "name": "Finish run (applied)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2960,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=applied",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "3e3fe354-002e-5da0-9981-50847d54bb8d",
+      "name": "Finish run (not approved)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2480,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=not_approved",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "8a7a5559-1133-52f8-80a2-f2c66ea63a44",
+      "name": "Report guardrail rejection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1520,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "options": {
+          "timeout": 120000
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Run-Id",
+              "value": "={{ $('Start run').item.json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Agent proposal blocked by guardrails: \" + $json.pipeline) }}, \"body\": {{ JSON.stringify($json.guardrail_report.violations.join(\"\\n\")) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "71dc533a-ed8d-5d48-9c6f-1f9f053ec6ad",
+      "name": "Finish run (blocked)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1760,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/runs/{{ $('Start run').item.json.run_id }}/finish?status=blocked_by_guardrails",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Claude": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Diagnose and propose (agent)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ops tools": {
+      "ai_tool": [
+        [
+          {
+            "node": "Diagnose and propose (agent)",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Diagnose and propose (agent)",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spark job failed": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Analyse logs (deterministic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse logs (deterministic)": {
+      "main": [
+        [
+          {
+            "node": "Diagnose and propose (agent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Diagnose and propose (agent)": {
+      "main": [
+        [
+          {
+            "node": "Store proposal (guardrails)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store proposal (guardrails)": {
+      "main": [
+        [
+          {
+            "node": "Passed guardrails?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for approval": {
+      "main": [
+        [
+          {
+            "node": "Wait for approval (24h)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for approval (24h)": {
+      "main": [
+        [
+          {
+            "node": "Record decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record decision": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Passed guardrails?": {
+      "main": [
+        [
+          {
+            "node": "Ask for approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Report guardrail rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Open pull request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finish run (not approved)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open pull request": {
+      "main": [
+        [
+          {
+            "node": "Tell the team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tell the team": {
+      "main": [
+        [
+          {
+            "node": "Finish run (applied)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report guardrail rejection": {
+      "main": [
+        [
+          {
+            "node": "Finish run (blocked)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "opsErrorHandler1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "description": "A Spark job failed or ran badly: analyse its logs, let the agent propose a guarded config change, wait for human approval, then open a pull request."
+  },
+  "tags": []
+}

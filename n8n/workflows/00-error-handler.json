@@ -1,0 +1,117 @@
+{
+  "id": "opsErrorHandler1",
+  "name": "Ops agent error handler",
+  "active": true,
+  "nodes": [
+    {
+      "id": "554ff98c-a88c-559d-95b4-2ccca5854183",
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "b5286f2c-64fd-5007-b12d-f9d1ebda9a30",
+      "name": "Alert the team",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/notify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={ \"title\": {{ JSON.stringify(\"Ops agent workflow failed: \" + $json.workflow.name) }}, \"body\": {{ JSON.stringify(\"Node: \" + ($json.execution.lastNodeExecuted ?? \"?\") + \"\\nError: \" + ($json.execution.error?.message ?? \"unknown\")) }}, \"links\": {{ JSON.stringify($json.execution.url ? { \"Open execution\": $json.execution.url } : {}) }} }"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "8058bb6d-d1df-5f30-a4d4-b114d81ef583",
+      "name": "Mark run failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_TOOLS_URL }}/executions/{{ $('On workflow error').item.json.execution.id }}/failed?error={{ encodeURIComponent($('On workflow error').item.json.execution.error?.message ?? '') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Alert the team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert the team": {
+      "main": [
+        [
+          {
+            "node": "Mark run failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "description": "Any ops-agent workflow that fails lands here: tell the team which node failed and why."
+  },
+  "tags": []
+}

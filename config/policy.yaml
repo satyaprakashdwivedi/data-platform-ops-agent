@@ -1,0 +1,55 @@
+# Guardrails the agent cannot override. Everything the LLM proposes is checked against this file
+# in code (ops-tools/src/ops_tools/guardrails.py) before a human is even asked to approve it.
+
+spark_conf:
+  # Only these keys may ever be changed by an agent proposal ("*" matches a prefix).
+  allowed_keys:
+    - spark.executor.memory
+    - spark.executor.memoryOverhead
+    - spark.executor.pyspark.memory
+    - spark.executor.cores
+    - spark.executor.instances
+    - spark.driver.memory
+    - spark.memory.fraction
+    - spark.sql.shuffle.partitions
+    - spark.sql.adaptive.*
+    - spark.sql.autoBroadcastJoinThreshold
+    - spark.sql.files.maxPartitionBytes
+    - spark.default.parallelism
+    - spark.dynamicAllocation.*
+    - spark.serializer
+  # Hard limits per key (sizes in Spark notation).
+  limits:
+    spark.executor.memory: {min: 1g, max: 32g}
+    spark.executor.memoryOverhead: {min: 384m, max: 8g}
+    spark.executor.pyspark.memory: {max: 8g}
+    spark.driver.memory: {min: 1g, max: 16g}
+    spark.executor.cores: {min: 1, max: 8}
+    spark.executor.instances: {min: 1, max: 200}
+    spark.sql.shuffle.partitions: {min: 8, max: 20000}
+    spark.memory.fraction: {min: 0.3, max: 0.9}
+  # heap + overhead + pyspark memory of one executor container
+  max_container_memory: 40g
+  # executor.instances x executor.cores
+  max_total_cores: 800
+  # a size or count may move at most this factor (up or down) in one proposal
+  max_change_factor: 3
+  max_keys_per_proposal: 8
+  # every changed key must come from the deterministic analyzer's recommendations for this run
+  must_be_grounded: true
+
+quality:
+  # failed-row percentage that opens an incident; a rule can override it with max_failed_pct
+  # in pipelines/rules/<pipeline>.yaml
+  default_max_failed_pct: 2.0
+  min_checked_rows: 100
+  window_minutes: 60
+  allowed_actions: [monitor, open_incident, pause_downstream, adjust_rule]
+  # adjust_rule may only change a rule's max_failed_pct (never its SQL expression),
+  # and may relax it by at most this many percentage points per proposal
+  max_rule_relaxation_pct: 5
+
+approval:
+  # proposals of these kinds always wait for a human
+  required_for: [spark_conf, dq_action]
+  expire_after_hours: 24

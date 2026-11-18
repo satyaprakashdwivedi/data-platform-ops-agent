@@ -1,0 +1,156 @@
+# Data platform ops agent: n8n in queue mode (main + workers on Redis, state in Postgres) orchestrating a
+# Claude agent whose tools are served by ops-tools over MCP.
+#
+#   cp .env.example .env   # fill in ANTHROPIC_API_KEY and the secrets
+#   docker compose up -d --build
+#   ./demo/run_demo.sh
+#
+# Hermetic test (no API key, scripted model): docker compose --profile test up -d  (see tests/e2e)
+
+x-n8n-env: &n8n-env
+  DB_TYPE: postgresdb
+  DB_POSTGRESDB_HOST: postgres
+  DB_POSTGRESDB_DATABASE: n8n
+  DB_POSTGRESDB_USER: n8n
+  DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?set N8N_DB_PASSWORD in .env}
+  EXECUTIONS_MODE: queue
+  QUEUE_BULL_REDIS_HOST: redis
+  QUEUE_HEALTH_CHECK_ACTIVE: "true"
+  OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: "true"
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+  N8N_HOST: ${N8N_HOST:-localhost}
+  WEBHOOK_URL: ${N8N_PUBLIC_URL:-http://localhost:5678/}
+  N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+  GENERIC_TIMEZONE: ${TZ:-UTC}
+  N8N_DIAGNOSTICS_ENABLED: "false"
+  N8N_PERSONALIZATION_ENABLED: "false"
+  N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"     # workflows read OPS_TOOLS_URL / ANTHROPIC_MODEL below
+  EXECUTIONS_DATA_PRUNE: "true"
+  EXECUTIONS_DATA_MAX_AGE: "720"            # hours: keep 30 days of executions for audit
+  OPS_TOOLS_URL: http://ops-tools:8000
+  N8N_INTERNAL_WEBHOOK_URL: http://n8n:5678
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: platform
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD}
+      OPS_DB_PASSWORD: ${OPS_DB_PASSWORD:?set OPS_DB_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ops-tools:
+    build:
+      context: .
+      dockerfile: ops-tools/Dockerfile
+    image: data-platform-ops-tools:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ops_tools:${OPS_DB_PASSWORD}@postgres:5432/ops
+      OPS_TOOLS_TOKEN: ${OPS_TOOLS_TOKEN:?set OPS_TOOLS_TOKEN in .env}
+      SPARK_EVENT_LOG_DIR: /data/spark-events
+      SPARK_HISTORY_SERVER_URL: ${SPARK_HISTORY_SERVER_URL:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GITHUB_BASE_BRANCH: ${GITHUB_BASE_BRANCH:-main}
+      GITHUB_CONFIG_ROOT: ${GITHUB_CONFIG_ROOT:-pipelines}
+    volumes:
+      - ${SPARK_EVENT_LOG_HOST_DIR:-./demo/spark-events}:/data/spark-events:ro
+      - ./config:/app/config:ro
+      - ./pipelines:/app/pipelines:ro
+      - ./outbox:/app/outbox
+    ports:
+      - "127.0.0.1:8000:8000"    # REST + MCP (/mcp); bearer token required
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  n8n-import:
+    image: n8nio/n8n:2.47.7
+    environment:
+      <<: *n8n-env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      OPS_TOOLS_TOKEN: ${OPS_TOOLS_TOKEN}
+      N8N_WEBHOOK_TOKEN: ${N8N_WEBHOOK_TOKEN:?set N8N_WEBHOOK_TOKEN in .env}
+      APPROVER_USER: ${APPROVER_USER:-approver}
+      APPROVER_PASSWORD: ${APPROVER_PASSWORD:?set APPROVER_PASSWORD in .env}
+    entrypoint: ["/bin/sh", "/init/import.sh"]
+    volumes:
+      - ./n8n/init:/init:ro
+      - ./n8n/workflows:/workflows:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  n8n:
+    image: n8nio/n8n:2.47.7
+    restart: unless-stopped
+    environment: *n8n-env
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      n8n-import:
+        condition: service_completed_successfully
+      ops-tools:
+        condition: service_healthy
+
+  n8n-worker:
+    image: n8nio/n8n:2.47.7
+    restart: unless-stopped
+    command: ["worker", "--concurrency=5"]
+    environment: *n8n-env
+    deploy:
+      replicas: ${N8N_WORKERS:-2}
+    depends_on:
+      n8n:
+        condition: service_healthy
+
+  # Scripted Anthropic API for hermetic end-to-end tests (no key, deterministic). Not started by default.
+  stub-llm:
+    profiles: ["test"]
+    image: data-platform-ops-tools:local
+    command: ["uvicorn", "ops_tools.testing.stub_llm:app", "--host", "0.0.0.0", "--port", "8100"]
+    environment:
+      STUB_LLM_DEBUG: ${STUB_LLM_DEBUG:-}
+    depends_on:
+      ops-tools:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  redis-data:
+  n8n-data:

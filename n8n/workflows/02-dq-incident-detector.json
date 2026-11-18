@@ -1,0 +1,231 @@
+{
+  "id": "opsDqDetector001",
+  "name": "Data quality incident detector",
+  "active": true,
+  "nodes": [
+    {
+      "id": "91718e60-1712-585c-a6c0-1ee803df2c36",
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7dd8d687-5cc4-5e03-b7e0-6da7ffbe2007",
+      "name": "Check now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "check-quality-now",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "webhookId": "a16689d4-b6b5-594b-87d2-8248b3a1a717",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsWebhookToken1",
+          "name": "Webhook token"
+        }
+      }
+    },
+    {
+      "id": "0f1d2b9a-162b-58f6-9c06-a2f1d9e2d2fb",
+      "name": "Find incidents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.OPS_TOOLS_URL }}/quality/incidents",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": false,
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "opsToolsBearer01",
+          "name": "Ops tools token"
+        }
+      }
+    },
+    {
+      "id": "51d272e7-3e7f-5dc9-9d1c-8404094a51fb",
+      "name": "Any incidents?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6436705c-902c-594f-8638-7a18c3ec7a49",
+              "leftValue": "={{ $json.incident_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "dc876a4f-0252-5ae7-9161-18a4bd011e4f",
+      "name": "One item per incident",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "fieldToSplitOut": "incidents",
+        "include": "noOtherFields"
+      }
+    },
+    {
+      "id": "49a3837a-d0b8-5255-a857-8bf7a45eed29",
+      "name": "Start incident workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_INTERNAL_WEBHOOK_URL }}/webhook/dq-incident",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsWebhookToken1",
+          "name": "Webhook token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Find incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check now": {
+      "main": [
+        [
+          {
+            "node": "Find incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find incidents": {
+      "main": [
+        [
+          {
+            "node": "Any incidents?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any incidents?": {
+      "main": [
+        [
+          {
+            "node": "One item per incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per incident": {
+      "main": [
+        [
+          {
+            "node": "Start incident workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "opsErrorHandler1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "description": "Every 15 minutes: find quality rules failing above threshold and hand each one to the incident workflow."
+  },
+  "tags": []
+}

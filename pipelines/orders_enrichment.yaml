@@ -1,0 +1,11 @@
+pipeline: orders_enrichment
+owner: data-platform
+schedule: streaming
+entrypoint: examples/kafka-json-enrich-to-kafka.yaml
+downstream: [orders_daily_revenue, finance_export]
+spark_conf:
+  spark.executor.memory: 4g
+  spark.executor.cores: "4"
+  spark.executor.instances: "6"
+  spark.sql.shuffle.partitions: "64"
+  spark.sql.adaptive.enabled: "true"

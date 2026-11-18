@@ -1,0 +1,8 @@
+26/11/18 03:41:02 WARN TaskSetManager: Lost task 9.0 in stage 1.0 (TID 105): java.lang.OutOfMemoryError: Java heap space
+26/11/18 03:41:02 ERROR Executor: Exception in task 9.0 in stage 1.0 (TID 105)
+java.lang.OutOfMemoryError: Java heap space
+	at java.base/java.util.Arrays.copyOf(Arrays.java:3537)
+26/11/18 03:44:17 ERROR Executor: Exception in task 18.1 in stage 1.0 (TID 131)
+java.lang.OutOfMemoryError: Java heap space
+26/11/18 03:47:55 WARN TaskSetManager: Lost task 27.0 in stage 1.0 (TID 140): java.lang.OutOfMemoryError: GC overhead limit exceeded
+26/11/18 03:52:30 ERROR TaskSetManager: Task 9 in stage 1.0 failed 4 times; aborting job
