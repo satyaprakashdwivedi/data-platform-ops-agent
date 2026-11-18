@@ -94,8 +94,15 @@ def proposal_id_from(note: dict) -> int:
 
 
 def wait_for_status(proposal_id: int, wanted: str) -> dict:
-    return wait_for(f"proposal {proposal_id} -> {wanted}",
-                    lambda: (lambda p: p if p["status"] == wanted else None)(ops("GET", f"/proposals/{proposal_id}")[1]))
+    last = {}
+
+    def reached():
+        last.update(ops("GET", f"/proposals/{proposal_id}")[1])
+        return last if last["status"] == wanted else None
+    try:
+        return wait_for(f"proposal {proposal_id} -> {wanted}", reached)
+    except AssertionError:
+        raise AssertionError(f"proposal {proposal_id} stayed {last.get('status')}: {last.get('applied_ref')}")
 
 
 # ------------------------------------------------------------------------------------------------ scenarios

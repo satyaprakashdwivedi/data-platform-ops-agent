@@ -142,7 +142,8 @@ services:
   # Scripted Anthropic API for hermetic end-to-end tests (no key, deterministic). Not started by default.
   stub-llm:
     profiles: ["test"]
-    image: data-platform-ops-tools:local
+    image: data-platform-ops-tools:local   # built by the ops-tools service
+    pull_policy: never
     command: ["uvicorn", "ops_tools.testing.stub_llm:app", "--host", "0.0.0.0", "--port", "8100"]
     environment:
       STUB_LLM_DEBUG: ${STUB_LLM_DEBUG:-}
